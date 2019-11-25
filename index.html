@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html class='use-all-space'>
+<head>
+    <meta http-equiv='X-UA-Compatible' content='IE=Edge' />
+    <meta charset='UTF-8'>
+    <title>TomTom's My Traffic Map</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/js-cookie@beta/dist/js.cookie.min.js"></script>
+    <link rel='stylesheet' type='text/css' href='https://api.tomtom.com/maps-sdk-for-web/cdn/5.x/5.39.0/maps/maps.css'>
+    <script src="https://api.tomtom.com/maps-sdk-for-web/cdn/5.x/5.39.0/maps/maps-web.min.js"></script>
+    <script src="https://api.tomtom.com/maps-sdk-for-web/cdn/5.x/5.39.0/services/services-web.min.js"></script>
+    <link rel='stylesheet' type='text/css' 
+        href='https://api.tomtom.com/maps-sdk-for-web/cdn/5.x/5.38.0/maps/css-styles/traffic-incidents.css'/>
+    <script src="./polyline.js"></script>
+    <script src="./searchcity.js"></script>
+
+</head>
+<body>
+
+    <div style='width:100vw; height: 80vh' id='map' class='map'></div>
+    <form>
+        <input type = "button" onclick = "resetKey()" value = "RESET API KEY" />
+        <input type = "button" onclick = "resetCenter()" value = "SAVE THIS LOCATION" />
+        <!-- Note I am stopping the submition when pressing ENTER - see file searchcity.js -->
+        <label for="city">Search City : </label><input type="text" id="city" onKeyPress="checkEnter(event)" /> 
+    </form>   
+
+    <script>
+
+        function resetKey() {
+            Cookies.remove('TOMTOM_API_KEY');
+            alert( "API KEY RESET - RELOAD THIS PAGE" );
+        };
+
+        // Save the current map location 
+        function resetCenter() {
+            Cookies.set('MAP_LOCATION',JSON.stringify(map.getCenter()));
+            alert( "CURRENT LOCATION SAVED" );
+            console.log('SAVED:'+map.getCenter());
+        }
+
+        var trafficTimeout;
+        var map;
+        // Added a bunch of cities for you to choose. Please add yours!
+        var LA = { lat: 34.05224, lng: -118.24334};
+        var TORONTO = {lng: -79.37955665855566, lat: 43.648321745176986};
+        var NEW_DELHI = {lng: 77.2150811650605, lat: 28.65351027677407};
+        var MADRID = {lat: 40.416775, lng: -3.703790};
+        var MEXICO = {lat: 19.42968891342941 , lng: -99.0937376871797  }
+        var WASHINGTON = {lng: -77.0097512639369, lat: 38.8898720060146};
+        var SAOPAULO = {lat: -23.533773, lng: -46.625290};
+        var ISTAMBUL = {lng: 28.963177203012748, lat: 41.01221409616096};
+        var PALERMO = {lng: 13.354533750729303, lat: 38.10733220510244};
+        var MEDELLIN = {lng: -75.56854973601094, lat: 6.25027558156728};
+
+        // Traffic Flow configuration ( In case you want to add the Tier later .. )
+        var trafficFlowConfig = {
+            theme: {
+                style: 'relative-delay', // relative,  absolute  or 'relative-delay'
+                source: 'vector'
+            },
+            refresh: 30000 // Traffic refreshes every 30 secs with TomTom. 
+        };
+
+        //  Traffic incident configuration.
+        var trafficIncidentsConfig = {
+            // incidentTiles: {
+            //     style: 'tomtom://vector/1/s3'
+            // }, 
+            incidentDetails: {
+                style: 's2'
+            }
+        }
+       
+        // Check if we have an API KEY
+        var API_KEY = Cookies.get('TOMTOM_API_KEY');
+        if (API_KEY == null) {
+            API_KEY = prompt("Enter your API KEY : ", "Don't have one? visit developer.tomtom.com");
+            Cookies.set('TOMTOM_API_KEY',API_KEY);
+        }
+        
+        if ( API_KEY!= null ) {
+            // Update the key for the traffic incidents layer
+            trafficIncidentsConfig.key = API_KEY;
+            trafficFlowConfig.key = API_KEY;
+
+            // Did we have a center location saved?
+            var centerLocation = Cookies.get('MAP_LOCATION');
+
+            if (centerLocation == null) {
+                centerLocation = LA;
+            } else {
+                centerLocation = JSON.parse(centerLocation);
+            }
+
+            map = tt.map({
+                    key: API_KEY,
+                    container: 'map',
+                    basePath: 'sdk/',
+                    style: 'tomtom://vector/1/basic-main',
+                    dragPan: true,
+                    center: centerLocation,
+                    bearing:0,
+                    maxZoom: 21,
+                    minZoom: 10,
+                    zoom: 15
+                });
+            
+            // After 1 sec fetch the traffic incidents
+            map.on('zoomend', function(){
+                clearTimeout(trafficTimeout);
+                trafficTimeout = setTimeout( fetchIncidents , 1000);
+            });
+
+            map.on('load', function() {
+
+                // Just in case you don't have a touch screen ... :)  
+                map.addControl(new tt.NavigationControl());
+                
+                // Add the Traffic incidents when the map loads
+                map.addTier(new tt.TrafficIncidentTier(trafficIncidentsConfig))
+
+                // Un comment this line to see the traffic flow .. 
+                //map.addTier(new tt.TrafficFlowTilesTier(trafficFlowConfig));
+                
+                // Animate to a zoom 17 - neighborhood level.
+                setTimeout(function() {
+                    map.easeTo({
+                        pitch: 60,
+                        zoom: 17,
+                        bearing: 270,
+                        duration: 7000
+                    });
+                
+                },1000);
+            });
+        }
+
+        // Move the map to  a certain location. Used when I search for a city.
+        var moveMapTo = function( lngLat ) {
+            map.flyTo({
+                center: lngLat,
+                zoom: 14
+            });
+        }
+
+        var currentPolylineArray = [];
+        // Using the TT.SERVICES API we try to get the traffic incidents in the current map view
+        var fetchIncidents = function() {
+            currentPolylineArray = [];
+            tt.services.incidentDetails({
+            key: API_KEY,
+            boundingBox: map.getBounds(),
+            style: 's2',
+            zoomLevel: Math.floor(map.getZoom()), // <-- important! must be an integer value
+            trafficModelID: '-1', // <-- This means bring the Latest traffic
+            expandCluster: true,
+            geometries: 'original',
+            originalPosition: 'true'
+        })
+            .go()
+            .then(function(response) {
+                
+                for ( const poi of response.tm.poi ) {
+                    var polylineStruct = {
+                        geojson: {},
+                        ty: 0 // ty is the incident type. The color is a function of it
+                    }
+                    polylineStruct.geojson = polylineToGeoJSON(poi.v,5);
+                    polylineStruct.ty = poi.ty;
+                    currentPolylineArray.push(polylineStruct);
+                    
+                }
+                addAnimation(this.map, currentPolylineArray);
+            })
+        }
+
+    </script>
+</body>
+</html>
